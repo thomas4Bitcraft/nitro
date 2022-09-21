@@ -5,6 +5,7 @@ import { nodeFileTrace, NodeFileTraceOptions } from '@vercel/nft'
 import type { Plugin } from 'rollup'
 import { resolvePath, isValidNodeImport, normalizeid } from 'mlly'
 import semver from 'semver'
+import { readPackageJSON } from 'pkg-types'
 import { isDirectory } from '../../utils'
 
 export interface NodeExternalsOptions {
@@ -111,8 +112,12 @@ export function externals (opts: NodeExternalsOptions): Plugin {
         // Guess as main subpath export
         const packageEntry = await _resolve(pkgName).catch(() => null)
         if (packageEntry !== originalId) {
-          // Guess subpathexport
-          const guessedSubpath = pkgName + subpath.replace(/\.[a-z]+$/, '')
+          // Reverse engineer subpath export
+          const { exports } = await getPackageJson(packageEntry)
+          const resolvedSubpath = findSubpath(subpath.replace(/^\//, './'), exports)
+
+          // Fall back to guessing
+          const guessedSubpath = resolvedSubpath ? join(pkgName, resolvedSubpath) : (pkgName + subpath.replace(/\.[a-z]+$/, ''))
           const resolvedGuess = await _resolve(guessedSubpath).catch(() => null)
           if (resolvedGuess === originalId) {
             trackedExternals.add(resolvedGuess)
@@ -152,17 +157,6 @@ export function externals (opts: NodeExternalsOptions): Plugin {
 
       // Resolve symlinks
       tracedFiles = await Promise.all(tracedFiles.map(file => fsp.realpath(file)))
-
-      // Read package.json with cache
-      const packageJSONCache = new Map() // pkgDir => contents
-      const getPackageJson = async (pkgDir: string) => {
-        if (packageJSONCache.has(pkgDir)) {
-          return packageJSONCache.get(pkgDir)
-        }
-        const pkgJSON = JSON.parse(await fsp.readFile(resolve(pkgDir, 'package.json'), 'utf8'))
-        packageJSONCache.set(pkgDir, pkgJSON)
-        return pkgJSON
-      }
 
       // Keep track of npm packages
       const tracedPackages = new Map() // name => pkgDir
@@ -263,4 +257,31 @@ async function isFile (file: string) {
     if (err.code === 'ENOENT') { return false }
     throw err
   }
+}
+
+// Read package.json with cache
+const packageJSONCache = new Map() // pkgDir => contents
+async function getPackageJson (pkgDir: string) {
+  if (packageJSONCache.has(pkgDir)) {
+    return packageJSONCache.get(pkgDir)
+  }
+  const pkgJSON = await readPackageJSON(pkgDir)
+  packageJSONCache.set(pkgDir, pkgJSON)
+  return pkgJSON
+}
+
+function flattenExports (exports: Record<string, string | Record<string, string>>, path?: string) {
+  return Object.entries(exports).flatMap(([key, value]) => typeof value === 'string' ? [[path ?? key, value]] : flattenExports(value, path ?? key))
+}
+
+function findSubpath (path: string, exports: Record<string, string | Record<string, string>>) {
+  const relativePath = path.startsWith('.') ? path : ('./' + path)
+  if (relativePath in exports) {
+    return relativePath
+  }
+
+  const flattenedExports = flattenExports(exports)
+
+  const [foundPath] = flattenedExports.find(([_, resolved]) => resolved === path) || []
+  return foundPath
 }
