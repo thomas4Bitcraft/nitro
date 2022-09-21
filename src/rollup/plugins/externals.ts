@@ -113,8 +113,8 @@ export function externals (opts: NodeExternalsOptions): Plugin {
         const packageEntry = await _resolve(pkgName).catch(() => null)
         if (packageEntry !== originalId) {
           // Reverse engineer subpath export
-          const { exports } = await getPackageJson(packageEntry)
-          const resolvedSubpath = findSubpath(subpath.replace(/^\//, './'), exports)
+          const { exports } = await getPackageJson(packageEntry) || {}
+          const resolvedSubpath = exports && findSubpath(subpath.replace(/^\//, './'), exports)
 
           // Fall back to guessing
           const guessedSubpath = resolvedSubpath ? join(pkgName, resolvedSubpath) : (pkgName + subpath.replace(/\.[a-z]+$/, ''))
